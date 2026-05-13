@@ -81,6 +81,134 @@ class EleicaoViewSet(viewsets.ModelViewSet):
         except Exception as e:
             return Response({'erro': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
+    @action(detail=True, methods=['post'])
+    def abrir(self, request, pk=None):
+        eleicao = self.get_object()
+        if eleicao.status != 'rascunho':
+            return Response({'erro': 'Eleição não pode ser aberta'}, status=status.HTTP_400_BAD_REQUEST)
+        if eleicao.candidatos.count() < 2:
+            return Response({'erro': 'Eleição deve ter pelo menos 2 candidatos'}, status=status.HTTP_400_BAD_REQUEST)
+        if eleicao.aptos.count() < 1:
+            return Response({'erro': 'Eleição deve ter pelo menos 1 eleitor apto'}, status=status.HTTP_400_BAD_REQUEST)
+        eleicao.status = 'aberta'
+        eleicao.save()
+        serializer = self.get_serializer(eleicao)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['post'])
+    def encerrar(self, request, pk=None):
+        eleicao = self.get_object()
+        if eleicao.status != 'aberta':
+            return Response({'erro': 'Eleição não pode ser encerrada'}, status=status.HTTP_400_BAD_REQUEST)
+        eleicao.status = 'encerrada'
+        eleicao.save()
+        return Response({'mensagem': 'Eleição encerrada com sucesso'})
+
+    @action(detail=True, methods=['get'])
+    def apuracao(self, request, pk=None):
+        eleicao = self.get_object()
+        if eleicao.status not in ['encerrada', 'apurada']:
+            return Response({'erro': 'Eleição não está apta para apuração'}, status=status.HTTP_403_FORBIDDEN)
+        
+        total_aptos = eleicao.aptos.count()
+        total_votantes = RegistroVotacao.objects.filter(eleicao=eleicao).count()
+        total_abstencoes = total_aptos - total_votantes
+        
+        votos_validos = Voto.objects.filter(eleicao=eleicao, em_branco=False).count()
+        votos_brancos = Voto.objects.filter(eleicao=eleicao, em_branco=True).count()
+        
+        candidatos = []
+        max_votos = 0
+        vencedores = []
+        
+        for candidato in eleicao.candidatos.all():
+            votos_candidato = Voto.objects.filter(eleicao=eleicao, candidato=candidato).count()
+            percentual = (votos_candidato / votos_validos * 100) if votos_validos > 0 else 0
+            candidatos.append({
+                'candidato': candidato.nome_urna,
+                'numero': candidato.numero,
+                'votos': votos_candidato,
+                'percentual': round(percentual, 2)
+            })
+            if votos_candidato > max_votos:
+                max_votos = votos_candidato
+                vencedores = [candidato.nome_urna]
+            elif votos_candidato == max_votos:
+                vencedores.append(candidato.nome_urna)
+        
+        candidatos.sort(key=lambda x: x['votos'], reverse=True)
+        for i, cand in enumerate(candidatos, 1):
+            cand['posicao'] = i
+        
+        comparecimento_pct = (total_votantes / total_aptos * 100) if total_aptos > 0 else 0
+        
+        if eleicao.status == 'encerrada':
+            eleicao.status = 'apurada'
+            eleicao.save()
+        
+        return Response({
+            'eleicao': eleicao.titulo,
+            'total_aptos': total_aptos,
+            'total_votantes': total_votantes,
+            'total_abstencoes': total_abstencoes,
+            'votos_validos': votos_validos,
+            'votos_brancos': votos_brancos,
+            'comparecimento_pct': round(comparecimento_pct, 2),
+            'resultado': candidatos,
+            'vencedores': vencedores,
+            'houve_empate': len(vencedores) > 1
+        })
+
+    @action(detail=True, methods=['get'])
+    def votantes(self, request, pk=None):
+        eleicao = self.get_object()
+        compareceu = request.query_params.get('compareceu', 'true').lower() == 'true'
+        
+        if compareceu:
+            registros = RegistroVotacao.objects.filter(eleicao=eleicao).select_related('eleitor')
+            votantes = []
+            for reg in registros:
+                cpf_mascarado = reg.eleitor.cpf[:3] + '***' + reg.eleitor.cpf[7:11] + '**' + reg.eleitor.cpf[12:]
+                votantes.append({
+                    'nome': reg.eleitor.nome,
+                    'cpf': cpf_mascarado,
+                    'data_hora': reg.data_hora
+                })
+        else:
+            aptos_ids = set(eleicao.aptos.values_list('id', flat=True))
+            votaram_ids = set(RegistroVotacao.objects.filter(eleicao=eleicao).values_list('eleitor_id', flat=True))
+            abstencoes_ids = aptos_ids - votaram_ids
+            abstencoes = Eleitor.objects.filter(id__in=abstencoes_ids)
+            votantes = []
+            for eleitor in abstencoes:
+                cpf_mascarado = eleitor.cpf[:3] + '***' + eleitor.cpf[7:11] + '**' + eleitor.cpf[12:]
+                votantes.append({
+                    'nome': eleitor.nome,
+                    'cpf': cpf_mascarado
+                })
+        
+        return Response(votantes)
+
+    @action(detail=True, methods=['post'])
+    def cadastrar_aptos(self, request, pk=None):
+        eleicao = self.get_object()
+        if eleicao.status != 'rascunho':
+            return Response({'erro': 'Eleição deve estar em rascunho'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        eleitores_ids = request.data.get('eleitores_ids', [])
+        if not isinstance(eleitores_ids, list):
+            return Response({'erro': 'eleitores_ids deve ser uma lista'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        total_cadastrados = 0
+        for eleitor_id in eleitores_ids:
+            try:
+                AptidaoEleitor.objects.get_or_create(eleicao=eleicao, eleitor_id=eleitor_id)
+                total_cadastrados += 1
+            except:
+                pass  
+        
+        return Response({'total_cadastrados': total_cadastrados})
+
 class CandidatoViewSet(viewsets.ModelViewSet):
     queryset = Candidato.objects.select_related('eleicao').all()
     serializer_class = CandidatoSerializer
