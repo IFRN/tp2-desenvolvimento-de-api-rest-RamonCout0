@@ -43,7 +43,9 @@ router.register(r'votos', VotoViewSet)
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-    path('api/', include(router.urls)),
+    path('eleicoes_api/', include(router.urls)),
+    path('eleicoes_api/verificar-comprovante/', verificar_comprovante),
+    path('eleicoes_api/comprovantes/qr/', gerar_qr_code),
     path('swagger/', schema_view.with_ui('swagger', cache_timeout=0), name='schema-swagger-ui'),
     path('redoc/', schema_view.with_ui('redoc', cache_timeout=0), name='schema-redoc'),
 ]
