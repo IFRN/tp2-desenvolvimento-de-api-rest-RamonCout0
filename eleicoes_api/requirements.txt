@@ -1,0 +1,6 @@
+django
+djangorestframework
+drf-yasg
+qrcode
+Pillow
+psycopg2-binary
